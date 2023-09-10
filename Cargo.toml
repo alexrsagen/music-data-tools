@@ -1,0 +1,22 @@
+[package]
+name = "music-data-tools"
+description = "Tools for interacting with music data (Spotify, Apple Music)"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alexander Sagen <alexander@sagen.me>"]
+license = "MIT"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json", "rustls-tls", "gzip"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+bytesize = "1.1"
+log = "0.4"
+env_logger = "0.10"
+anyhow = "1.0"
+select = "0.6"
+dialoguer = { version = "0.10", default-features = false }
+console = "0.15"
