@@ -6,7 +6,31 @@ Imports Spotify GDPR data dump (my_spotify_data / MyData) playlists to Apple Mus
 
 The tool does not require an Apple Developer account, as it uses the public client token from [music.apple.com](https://music.apple.com/) to access the API.
 
+### Features
+- Select which playlists you want to import
+- Import multiple playlists at the same time
+- Run "headless" (without user interaction)
+- Does not require Apple Developer account
+
+### Known issues/shortcomings
+- Will sometimes pick the wrong track, as the tool currently searches for `artist - track title` in the Apple Music catalog and naively picks the first result. It assumes the first result is correct and does not double check or verify anything. This can be improved.
+
+
 ### Usage
+1. Download the [latest release](https://github.com/alexrsagen/music-data-tools/releases/latest) binary for your OS/architecture (or build it from source yourself)
+2. Run the application
+
+Running from a binary:
+```
+music-data-tools spta ./my_spotify_data/MyData/Playlist1.json
+```
+
+Running from source using `cargo`:
+```
+cargo run -- spta ./my_spotify_data/MyData/Playlist1.json
+```
+
+Available command-line options:
 ```
 Usage: music-data-tools [OPTIONS] <COMMAND>
 
@@ -24,17 +48,3 @@ Options:
   -h, --help                       Print help
   -V, --version                    Print version
 ```
-
-For example (using `cargo`):
-```
-cargo run -- spta ".\my_spotify_data\MyData\Playlist1.json"
-```
-
-### Features
-- Select which playlists you want to import
-- Import multiple playlists at the same time
-- Run "headless" (without user interaction)
-- Does not require Apple Developer account
-
-### Known issues/shortcomings
-- Will sometimes pick the wrong track, as the tool currently searches for `artist - track title` in the Apple Music catalog and naively picks the first result. It assumes the first result is correct and does not double check or verify anything. This can be improved.
