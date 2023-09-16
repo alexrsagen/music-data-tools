@@ -8,11 +8,12 @@ use apple_music::request::{
     LibraryPlaylistCreationRequest, LibraryPlaylistCreationRequestAttributes,
     LibraryPlaylistCreationRequestRelationships, Objects, SearchQuery,
 };
-use apple_music::response::{ListResponse, SearchResponse};
+use apple_music::response::{ListResponse, SearchResponse, PaginatedResponse};
 use apple_music::{ObjectType, ToRequestObject};
 use my_spotify_data::{
     Playlist as SpotifyPlaylist, PlaylistItemAbstraction, Playlists as SpotifyPlaylists,
 };
+use strsim::normalized_damerau_levenshtein;
 
 use std::path::Path;
 
@@ -35,7 +36,10 @@ async fn main() -> Result<()> {
         args::Command::ImportSpotifyGdprPlaylistsToAppleMusicApi {
             playlist_file,
             playlists,
-        } => import_spotify_playlists_to_apple_music(&config, playlist_file, playlists).await?,
+            dry,
+            min_score,
+            limit,
+        } => import_spotify_playlists_to_apple_music(&config, playlist_file, playlists, dry, min_score, limit).await?,
     };
 
     Ok(())
@@ -77,6 +81,9 @@ async fn import_spotify_playlists_to_apple_music<P: AsRef<Path>>(
     config: &config::Config,
     playlist_file: P,
     playlists: Option<Vec<String>>,
+    dry: bool,
+    min_score: f64,
+    limit: usize,
 ) -> anyhow::Result<()> {
     let playlists = playlists.unwrap_or_default();
     let term = console::Term::stdout();
@@ -137,7 +144,7 @@ async fn import_spotify_playlists_to_apple_music<P: AsRef<Path>>(
     ))?;
 
     for playlist in &selected_spotify_playlists {
-        if music_playlists
+        if !dry && music_playlists
             .iter()
             .find(|p| p.attributes.name == playlist.name)
             .is_some()
@@ -161,7 +168,7 @@ async fn import_spotify_playlists_to_apple_music<P: AsRef<Path>>(
 
         for item in &playlist.items {
             if let PlaylistItemAbstraction::Track(track) = item.item() {
-                let search_term = format!("{} - {}", track.artist_name, track.track_name);
+                let search_term = format!("{} {}", track.artist_name, track.track_name);
 
                 term.write_str(&format!(
                     "\t{} Searching for {:?} in the Apple Music catalog... ",
@@ -175,27 +182,41 @@ async fn import_spotify_playlists_to_apple_music<P: AsRef<Path>>(
                         &SearchQuery {
                             term: &search_term,
                             types: ObjectType::Songs.as_str(),
-                            limit: Some(1),
+                            limit: Some(limit),
                             ..Default::default()
                         },
                     )
                     .await?;
 
-                if let SearchResponse::Success(success_res) = &search_res {
-                    if let Some(songs) = &success_res.results.songs {
-                        if let Some(song) = songs.data.first() {
-                            music_track_objects.push(song.to_request_object());
+                if let Some(songs) = &search_res.results.songs {
+                    // score songs by fuzzy match of artist, album and track name
+                    let mut songs_with_score = Vec::with_capacity(songs.data.len());
+                    for song in &songs.data {
+                        let artist_score = normalized_damerau_levenshtein(&track.artist_name, &song.attributes.artist_name);
+                        let album_score = normalized_damerau_levenshtein(&track.album_name, &song.attributes.album_name);
+                        let track_score = normalized_damerau_levenshtein(&track.track_name, &song.attributes.name);
 
-                            term.clear_line()?;
-                            term.write_line(&format!(
-                                "\t{} Found {:?} in the Apple Music catalog: {}",
-                                console::style("✔").green(),
-                                &search_term,
-                                &song.attributes.url
-                            ))?;
-
-                            continue;
+                        let compound_score = artist_score + album_score + track_score;
+                        if compound_score > min_score {
+                            songs_with_score.push((song, compound_score));
                         }
+                    }
+                    songs_with_score.sort_by(|(_, a_score), (_, b_score)| b_score.total_cmp(a_score));
+
+                    if let Some((song, score)) = songs_with_score.first() {
+                        music_track_objects.push(song.to_request_object());
+
+                        term.clear_line()?;
+                        term.write_line(&format!(
+                            "\t{} Found \"{} - {}\" in the Apple Music catalog (score: {:.6}): {}",
+                            console::style("✔").green(),
+                            &song.attributes.artist_name,
+                            &song.attributes.name,
+                            score,
+                            &song.attributes.url
+                        ))?;
+
+                        continue;
                     }
                 }
 
@@ -215,6 +236,16 @@ async fn import_spotify_playlists_to_apple_music<P: AsRef<Path>>(
             }
         }
 
+        if dry {
+            term.write_str(&format!(
+                "{} Skipped creating playlist {:?} in Apple Music (--dry)",
+                console::style("✱").blue(),
+                &playlist.name
+            ))?;
+
+            continue;
+        }
+
         let create_playlist_res = music_client
             .create_library_playlist(&LibraryPlaylistCreationRequest {
                 attributes: LibraryPlaylistCreationRequestAttributes {
@@ -228,14 +259,14 @@ async fn import_spotify_playlists_to_apple_music<P: AsRef<Path>>(
                     parent: None,
                 }),
             })
-            .await?;
+            .await;
 
-        if let ListResponse::Success(success_res) = create_playlist_res {
-            term.write_line(&format!(
+        match create_playlist_res {
+            Ok(res) => term.write_line(&format!(
                 "{} Created playlist {:?} in Apple Music: {}",
                 console::style("✔").green(),
                 &playlist.name,
-                success_res
+                res
                     .data
                     .first()
                     .map(|p| format!(
@@ -243,13 +274,14 @@ async fn import_spotify_playlists_to_apple_music<P: AsRef<Path>>(
                         &config.apple_music_storefront, &p.id
                     ))
                     .unwrap_or_default()
-            ))?;
-        } else {
-            term.write_line(&format!(
-                "{} Failed to create playlist {:?} in Apple Music",
+            ))?,
+
+            Err(e) => term.write_line(&format!(
+                "{} Failed to create playlist {:?} in Apple Music: {}",
                 console::style("✘").red(),
-                &playlist.name
-            ))?;
+                &playlist.name,
+                e
+            ))?,
         }
     }
 

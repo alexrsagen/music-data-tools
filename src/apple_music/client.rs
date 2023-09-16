@@ -11,7 +11,7 @@ use serde::ser::Serialize;
 use tokio::sync::OnceCell;
 
 use super::request::{LibraryPlaylistCreationRequest, Objects, SearchQuery};
-use super::response::{ListResponse, LibrarySong, LibraryPlaylist, SearchResponse};
+use super::response::{ListResponse, LibrarySong, LibraryPlaylist, SearchResponse, Response};
 
 fn char_windows<'a>(src: &'a str, win_size: usize) -> impl Iterator<Item = (usize, &'a str)> {
     src.char_indices().flat_map(move |(from, _)| {
@@ -36,23 +36,26 @@ where
         .find_map(|(pos, c)| predicate(c).then_some(pos))
 }
 
-async fn get_token() -> Result<String> {
+async fn get_token() -> Result<Arc<String>> {
     // get HTML
     let base_url = Url::from_str("https://music.apple.com")?;
     let html = reqwest::get(base_url.clone()).await?.text().await?;
-    let doc = Document::from(html.as_str());
+    let js_url = {
+        let doc = Document::from(html.as_str());
 
-    // get JS URL from HTML
-    let js_relative_url = doc
-        .find(Name("script"))
-        .filter_map(|script| {
-            script
-                .attr("src")
-                .and_then(|src| src.starts_with("/assets/index-").then_some(src))
-        })
-        .next()
-        .ok_or(anyhow!("could not find JS in HTML"))?;
-    let js_url = base_url.join(js_relative_url)?;
+        // get JS URL from HTML
+        let js_relative_url = doc
+            .find(Name("script"))
+            .filter_map(|script| {
+                script
+                    .attr("src")
+                    .and_then(|src| src.starts_with("/assets/index-").then_some(src))
+            })
+            .next()
+            .ok_or(anyhow!("could not find JS in HTML"))?;
+
+        base_url.join(js_relative_url)?
+    };
 
     // get JS
     let js = reqwest::get(js_url).await?.text().await?;
@@ -68,7 +71,7 @@ async fn get_token() -> Result<String> {
     let end = start + len;
 
     // return JWT
-    Ok(js[start..end].to_string())
+    Ok(Arc::new(js[start..end].to_string()))
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +94,7 @@ impl Default for ClientConfig {
 #[derive(Clone)]
 pub struct Client {
     config: Arc<ClientConfig>,
-    token: OnceCell<String>,
+    token: OnceCell<Arc<String>>,
     client: reqwest::Client,
 }
 
@@ -151,7 +154,11 @@ impl Client {
             }
         }
 
-        Ok(serde_json::from_str(&text)?)
+        let json: Response<O> = serde_json::from_str(&text)?;
+        match json {
+            Response::Success(data) => Ok(data),
+            Response::Error(e) => Err(anyhow!(e)),
+        }
     }
 
     pub async fn get<O: DeserializeOwned>(&self, endpoint: &str) -> Result<O> {
@@ -190,7 +197,11 @@ impl Client {
             }
         }
 
-        Ok(serde_json::from_str(&text)?)
+        let json: Response<O> = serde_json::from_str(&text)?;
+        match json {
+            Response::Success(data) => Ok(data),
+            Response::Error(e) => Err(anyhow!(e)),
+        }
     }
 
     #[allow(unused)]

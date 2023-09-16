@@ -13,6 +13,18 @@ pub enum Command {
 		/// List of playlist names to include
 		#[clap(long, num_args = 0..)]
 		playlists: Option<Vec<String>>,
+
+		/// If set, will not create playlist or add tracks
+		#[clap(long)]
+		dry: bool,
+
+		/// Minimum score for a match (between 0.0 and 3.0)
+		#[clap(long, default_value = "0.8")]
+		min_score: f64,
+
+		/// Limit of possible songs per search result
+		#[clap(long, default_value = "10")]
+		limit: usize,
 	}
 }
 

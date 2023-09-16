@@ -101,6 +101,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b2d0f03b3640e3a630367e40c468cb7f309529c708ed1d88597047b0e7c6ef7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.18",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -723,9 +734,10 @@ dependencies = [
 
 [[package]]
 name = "music-data-tools"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bytesize",
  "chrono",
  "clap",
@@ -737,6 +749,7 @@ dependencies = [
  "select",
  "serde",
  "serde_json",
+ "strsim",
  "tokio",
 ]
 

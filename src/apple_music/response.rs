@@ -1,9 +1,49 @@
+use std::fmt;
+
 use anyhow::Result;
-use chrono::{NaiveDate, DateTime, Utc};
+use async_trait::async_trait;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
-use super::{Client, ContentRating, ObjectType, AudioVariant, PlaylistType, ToRequestObject};
+use super::{AudioVariant, Client, ContentRating, ObjectType, PlaylistType, ToRequestObject};
+
+#[async_trait]
+pub trait PaginatedResponse<T> {
+    fn next_url(&self) -> Option<&str>;
+    fn data_mut(&mut self) -> &mut Vec<T>;
+
+    async fn next(&self, client: &Client) -> Result<Option<Self>>
+    where
+        Self: Sized,
+        for<'de> Self: Deserialize<'de>,
+    {
+        if let Some(next_url) = self.next_url() {
+            let res = client.get(next_url).await?;
+            Ok(Some(res))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn all(mut self, client: &Client) -> Result<Vec<T>>
+    where
+        Self: Sized + DeserializeOwned,
+        T: Clone + Send,
+    {
+        let mut data = Vec::new();
+        data.append(self.data_mut());
+
+        let mut next_url = self.next_url().map(|s| s.to_owned());
+        while let Some(url) = next_url {
+            let mut res: Self = client.get(&url).await?;
+            data.append(res.data_mut());
+            next_url = res.next_url().map(|s| s.to_owned());
+        }
+
+        Ok(data)
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ResponseMeta {
@@ -22,62 +62,57 @@ pub struct Error {
     pub code: String,
 }
 
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: {}. (Status: {}, Code: {}, ID: {})",
+            &self.title, &self.detail, &self.status, &self.code, &self.id
+        )
+    }
+}
+
+impl std::error::Error for Error {}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ErrorResponse {
     pub errors: Vec<Error>,
 }
 
+impl fmt::Display for ErrorResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(err) = self.errors.first() {
+            write!(f, "{}", err)
+        } else {
+            write!(f, "")
+        }
+    }
+}
+
+impl std::error::Error for ErrorResponse {}
+
 #[derive(Debug, Clone, Deserialize)]
-pub struct SuccessfulListResponse<T> {
+#[serde(untagged)]
+pub enum Response<T> {
+    Success(T),
+    Error(ErrorResponse),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListResponse<T> {
     #[serde(default)]
     pub next: Option<String>,
     pub data: Vec<T>,
     pub meta: Option<ResponseMeta>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum ListResponse<T> {
-    Success(SuccessfulListResponse<T>),
-    Error(ErrorResponse),
-}
-
-impl<T: DeserializeOwned> ListResponse<T> {
-    #[allow(unused)]
-    pub async fn next(&self, client: &Client) -> Result<Option<Self>> {
-        if let Self::Success(success_res) = &self {
-            if let Some(next_url) = &success_res.next {
-                let res = client.get(next_url).await?;
-                Ok(Some(res))
-            } else {
-                Ok(None)
-            }
-        } else {
-            Ok(None)
-        }
+impl<T> PaginatedResponse<T> for ListResponse<T> {
+    fn next_url(&self) -> Option<&str> {
+        self.next.as_deref()
     }
-}
 
-impl<T: DeserializeOwned + Clone> ListResponse<T> {
-    pub async fn all(self, client: &Client) -> Result<Vec<T>> {
-        let mut data = Vec::new();
-        let mut next_url = None;
-
-        if let ListResponse::Success(mut success_res) = self {
-            next_url = success_res.next.clone();
-            data.append(&mut success_res.data);
-        }
-
-        while let Some(url) = &next_url {
-            if let ListResponse::Success(mut success_res) = client.get(url).await? {
-                next_url = success_res.next;
-                data.append(&mut success_res.data);
-            } else {
-                next_url = None;
-            }
-        }
-
-        Ok(data)
+    fn data_mut(&mut self) -> &mut Vec<T> {
+        &mut self.data
     }
 }
 
@@ -92,8 +127,14 @@ impl Artwork {
     #[allow(unused)]
     pub fn url_with_dimensions(&self, fallback_width: u64, fallback_height: u64) -> String {
         self.url
-            .replace("{w}", self.width.unwrap_or(fallback_width).to_string().as_str())
-            .replace("{h}", self.height.unwrap_or(fallback_height).to_string().as_str())
+            .replace(
+                "{w}",
+                self.width.unwrap_or(fallback_width).to_string().as_str(),
+            )
+            .replace(
+                "{h}",
+                self.height.unwrap_or(fallback_height).to_string().as_str(),
+            )
     }
 }
 
@@ -316,6 +357,48 @@ pub struct SearchResult<T> {
     pub data: Vec<T>,
 }
 
+#[async_trait]
+impl PaginatedResponse<Song> for SearchResult<Song> {
+    fn data_mut(&mut self) -> &mut Vec<Song> {
+        &mut self.data
+    }
+
+    fn next_url(&self) -> Option<&str> {
+        self.next.as_deref()
+    }
+
+    #[allow(unused)]
+    async fn next(&self, client: &Client) -> Result<Option<Self>> {
+        if let Some(next_url) = &self.next {
+            let res: SearchResponse = client.get(next_url).await?;
+            Ok(res.results.songs)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[async_trait]
+impl PaginatedResponse<Playlist> for SearchResult<Playlist> {
+    fn data_mut(&mut self) -> &mut Vec<Playlist> {
+        &mut self.data
+    }
+
+    fn next_url(&self) -> Option<&str> {
+        self.next.as_deref()
+    }
+
+    #[allow(unused)]
+    async fn next(&self, client: &Client) -> Result<Option<Self>> {
+        if let Some(next_url) = &self.next {
+            let res: SearchResponse = client.get(next_url).await?;
+            Ok(res.results.playlists)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct SearchResults {
@@ -356,14 +439,7 @@ pub struct SearchResponseMeta {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct SuccessfulSearchResponse {
+pub struct SearchResponse {
     pub results: SearchResults,
     pub meta: SearchResponseMeta,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum SearchResponse {
-    Success(SuccessfulSearchResponse),
-    Error(ErrorResponse),
 }
